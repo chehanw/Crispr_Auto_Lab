@@ -1,4 +1,5 @@
-import React from 'react';
+import React, { useState } from 'react';
+import { exportProtocol } from '../api/pipeline';
 
 // ── Types ─────────────────────────────────────────────────────────────────
 // Every field maps 1-to-1 to backend output keys — swap mock data for API
@@ -680,10 +681,44 @@ function buildPhases(steps: PipelineResult['protocol_steps']) {
 // ── Main component ────────────────────────────────────────────────────────
 
 const ResultsPanel: React.FC<ResultsPanelProps> = ({ result }) => {
+  const [exporting, setExporting] = useState(false);
+  const [exportError, setExportError] = useState<string | null>(null);
+
   if (!result) return null;
+
+  const handleExport = async () => {
+    setExporting(true);
+    setExportError(null);
+    try {
+      await exportProtocol(result);
+    } catch (err) {
+      setExportError((err as Error).message ?? 'Export failed.');
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return (
     <div style={{ display: 'flex', flexDirection: 'column', gap: 14, animation: 'fadeIn 0.3s ease' }}>
+      {/* Export toolbar */}
+      <div style={s.exportBar}>
+        <span style={s.exportBarLabel}>
+          Protocol ready — {result.gene} · {result.cell_line} · {result.edit_type}
+        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+          {exportError && (
+            <span style={{ fontSize: 12, color: 'var(--color-critical)' }}>{exportError}</span>
+          )}
+          <button
+            onClick={handleExport}
+            disabled={exporting}
+            style={{ ...s.exportBtn, opacity: exporting ? 0.65 : 1 }}
+          >
+            {exporting ? 'Exporting…' : '↓ Export Protocol'}
+          </button>
+        </div>
+      </div>
+
       {/* Row 1: Hypothesis — full width */}
       <HypothesisCard result={result} />
 
@@ -1092,6 +1127,40 @@ const s: Record<string, React.CSSProperties> = {
     width: 24,
     textAlign: 'right' as const,
     flexShrink: 0,
+  },
+
+  // Export toolbar
+  exportBar: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '9px 16px',
+    background: 'var(--color-surface-dim)',
+    border: '1px solid var(--color-border)',
+    borderRadius: 'var(--radius-md)',
+    flexWrap: 'wrap' as const,
+    gap: 10,
+  },
+  exportBarLabel: {
+    fontSize: 12,
+    fontWeight: 500,
+    color: 'var(--color-text-secondary)',
+    fontFamily: 'var(--font-mono)',
+  },
+  exportBtn: {
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    padding: '6px 14px',
+    background: 'var(--color-accent)',
+    color: '#fff',
+    border: 'none',
+    borderRadius: 'var(--radius-sm)',
+    fontSize: 12,
+    fontWeight: 700,
+    letterSpacing: '0.03em',
+    cursor: 'pointer',
+    flexShrink: 0 as const,
   },
 };
 

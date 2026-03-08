@@ -17,6 +17,34 @@ export async function loadDemo(
   return res.json() as Promise<PipelineResult>;
 }
 
+// ── Export Protocol ────────────────────────────────────────────────────────
+
+export async function exportProtocol(result: PipelineResult): Promise<void> {
+  const res = await fetch(`${BASE}/export`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(result),
+  });
+
+  if (!res.ok) {
+    let detail = '';
+    try { detail = (await res.json()).detail; } catch { detail = await res.text().catch(() => ''); }
+    throw new Error(detail || `Export failed (${res.status})`);
+  }
+
+  const blob = await res.blob();
+  const gene = (result.gene ?? 'unknown').replace(/[^A-Za-z0-9_-]/g, '_');
+  const today = new Date().toISOString().slice(0, 10);
+  const filename = `autolab_protocol_${gene}_${today}.html`;
+
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
 // ── Run Live (streaming SSE) ───────────────────────────────────────────────
 
 export interface StreamCallbacks {

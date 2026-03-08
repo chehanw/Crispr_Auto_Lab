@@ -5,6 +5,7 @@ Endpoints:
     POST /run/stream  — SSE stream: emits stage events then final result
     POST /run         — non-streaming fallback (returns final JSON only)
     GET  /demo/{name} — load the most recent cached result for a gene name
+    POST /export      — generate a printable HTML protocol document
     GET  /health
 """
 
@@ -20,7 +21,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
 # ── Project path ───────────────────────────────────────────────────────────
@@ -40,6 +41,7 @@ from agents.parser import parse_hypothesis
 from config import OUTPUT_DIR, TOP_K_GUIDES
 from models.schemas import SgRNACandidate, SgRNAResults
 from utils.pubmed_fetcher import fetch_papers
+from utils.protocol_exporter import export_protocol
 
 # ── App setup ──────────────────────────────────────────────────────────────
 
@@ -421,6 +423,33 @@ async def demo_endpoint(name: str):
             for p in (lit or {}).get("source_papers", [])
         ],
     }
+
+
+@app.post("/export")
+async def export_endpoint(result: dict):
+    """
+    Accept a pipeline result dict and return a printable HTML protocol document.
+
+    The client should trigger a file download using the Content-Disposition header.
+    File name format: autolab_protocol_<gene>_<date>.html
+    """
+    from datetime import date as _date
+    import re as _re
+
+    gene = _re.sub(r"[^A-Za-z0-9_-]", "_", result.get("gene", "unknown"))
+    today = _date.today().strftime("%Y-%m-%d")
+    filename = f"autolab_protocol_{gene}_{today}.html"
+
+    try:
+        html = export_protocol(result)
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Export failed: {exc}")
+
+    return Response(
+        content=html.encode("utf-8"),
+        media_type="text/html; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 @app.get("/health")
