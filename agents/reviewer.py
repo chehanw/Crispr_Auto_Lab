@@ -12,22 +12,21 @@ Retry policy: up to MAX_RETRIES on JSON/schema failures.
 
 from __future__ import annotations
 
-import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import anthropic
 from dotenv import load_dotenv
 
+# TODO: remove sys.path hack after proper packaging (pyproject.toml)
 load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import MODEL_FAST, MAX_TOKENS
 from models.schemas import KnockoutProtocol, ParsedHypothesis
+from utils.llm_utils import extract_json
 
 MAX_RETRIES = 3
 
@@ -102,6 +101,7 @@ RETRY_SUFFIX = "\n\nYour previous response failed validation with error: {error}
 def review_protocol(
     hypothesis: ParsedHypothesis,
     protocol: KnockoutProtocol,
+    api_key: str | None = None,
 ) -> dict:
     """
     Critique a CRISPR protocol like a peer reviewer.
@@ -119,7 +119,7 @@ def review_protocol(
         EnvironmentError:   If ANTHROPIC_API_KEY is missing.
         anthropic.APIError: On unrecoverable API failures.
     """
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY is not set.")
 
@@ -130,7 +130,7 @@ def review_protocol(
         protocol_json=protocol.model_dump_json(indent=2),
     )
 
-    last_error: Optional[str] = None
+    last_error: str | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         user_content = base_msg
@@ -149,7 +149,7 @@ def review_protocol(
             review = _parse_and_validate(raw)
             return review
 
-        except (ValueError, json.JSONDecodeError) as exc:
+        except ValueError as exc:
             last_error = str(exc)
             if attempt == MAX_RETRIES:
                 raise ValueError(
@@ -163,14 +163,7 @@ def review_protocol(
 
 def _parse_and_validate(text: str) -> dict:
     """Extract JSON and validate review schema fields."""
-    fenced = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
-    if fenced:
-        text = fenced.group(1).strip()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"JSON parse error: {exc}\nRaw: {text[:400]}") from exc
+    data = extract_json(text)
 
     # Validate top-level keys
     required = {"overall_verdict", "validation_flags", "review_summary"}

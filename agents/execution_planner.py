@@ -88,12 +88,13 @@ RETRY_SUFFIX = "\n\nPrevious attempt failed: {error}\nReturn corrected JSON only
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
-def generate_execution_packet(protocol_json: dict) -> dict:
+def generate_execution_packet(protocol_json: dict, api_key: str | None = None) -> dict:
     """
     Convert a protocol dict into a lab execution packet.
 
     Args:
         protocol_json: Raw dict from protocol_generator (KnockoutProtocol.model_dump()).
+        api_key:       Optional API key override; falls back to ANTHROPIC_API_KEY env var.
 
     Returns:
         Dict with key "execution_packet" containing all lab artifacts.
@@ -106,7 +107,7 @@ def generate_execution_packet(protocol_json: dict) -> dict:
     if not isinstance(protocol_json, dict) or not protocol_json:
         raise ValueError("protocol_json must be a non-empty dict.")
 
-    api_key = os.environ.get("ANTHROPIC_API_KEY", "")
+    api_key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
         raise EnvironmentError("ANTHROPIC_API_KEY is not set.")
 
@@ -180,7 +181,7 @@ def print_execution_packet(packet: dict) -> None:
 
     print("\n  — Experimental Conditions —")
     for c in ep["experimental_conditions"]:
-        print(f"    [{c['condition']}]  {c['description']}")
+        print(f"    [{c.get('condition', '?')}]  {c.get('description', '')}")
 
     print("\n  — Day-by-Day Timeline —")
     for d in ep["day_by_day_timeline"]:

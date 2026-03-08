@@ -32,6 +32,7 @@ from models.schemas import (
     TransfectionMethod,
 )
 from agents.protocol_generator import (
+    _format_review_flags,
     _validate_inputs,
     _validate_schema,
     generate_protocol,
@@ -329,3 +330,85 @@ class TestGenerateProtocol:
         protocol, _ = generate_protocol(hypothesis, sgrna_results)
         assert protocol.validation_assay is not None
         assert create_mock.call_count == 2
+
+
+# ── prior_review / revision loop ────────────────────────────────────────────
+
+class TestFormatReviewFlags:
+    def test_empty_flags_returns_fallback(self):
+        text = _format_review_flags({"validation_flags": []})
+        assert "no specific flags" in text
+
+    def test_missing_flags_key_returns_fallback(self):
+        text = _format_review_flags({})
+        assert "no specific flags" in text
+
+    def test_formats_single_flag(self):
+        review = {
+            "validation_flags": [{
+                "severity": "critical",
+                "category": "controls",
+                "issue": "No negative control.",
+                "recommendation": "Add non-targeting sgRNA.",
+            }]
+        }
+        text = _format_review_flags(review)
+        assert "[CRITICAL]" in text
+        assert "No negative control." in text
+        assert "Add non-targeting sgRNA." in text
+
+    def test_formats_multiple_flags_numbered(self):
+        flags = [
+            {"severity": "critical", "category": "controls",
+             "issue": "Issue A", "recommendation": "Fix A"},
+            {"severity": "warning", "category": "validation",
+             "issue": "Issue B", "recommendation": "Fix B"},
+        ]
+        text = _format_review_flags({"validation_flags": flags})
+        assert "1." in text
+        assert "2." in text
+
+
+class TestPriorReviewInjection:
+    @patch("agents.protocol_generator.anthropic.Anthropic")
+    def test_prior_review_appended_to_prompt(self, mock_cls, hypothesis, sgrna_results, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        create_mock = mock_cls.return_value.messages.create
+        create_mock.return_value = _make_mock_message(json.dumps(_valid_protocol_dict()))
+
+        prior_review = {
+            "validation_flags": [{
+                "severity": "critical",
+                "category": "controls",
+                "issue": "Missing negative control.",
+                "recommendation": "Add non-targeting sgRNA condition.",
+            }]
+        }
+        generate_protocol(hypothesis, sgrna_results, prior_review=prior_review)
+
+        user_content = create_mock.call_args[1]["messages"][0]["content"]
+        assert "REVISION REQUIRED" in user_content
+        assert "Missing negative control." in user_content
+
+    @patch("agents.protocol_generator.anthropic.Anthropic")
+    def test_no_prior_review_no_revision_suffix(self, mock_cls, hypothesis, sgrna_results, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        create_mock = mock_cls.return_value.messages.create
+        create_mock.return_value = _make_mock_message(json.dumps(_valid_protocol_dict()))
+
+        generate_protocol(hypothesis, sgrna_results, prior_review=None)
+
+        user_content = create_mock.call_args[1]["messages"][0]["content"]
+        assert "REVISION REQUIRED" not in user_content
+
+    @patch("agents.protocol_generator.anthropic.Anthropic")
+    def test_prior_review_with_empty_flags_uses_fallback(self, mock_cls, hypothesis, sgrna_results, monkeypatch):
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+        create_mock = mock_cls.return_value.messages.create
+        create_mock.return_value = _make_mock_message(json.dumps(_valid_protocol_dict()))
+
+        generate_protocol(hypothesis, sgrna_results, prior_review={"validation_flags": []})
+
+        user_content = create_mock.call_args[1]["messages"][0]["content"]
+        assert "REVISION REQUIRED" in user_content
+        assert "no specific flags" in user_content

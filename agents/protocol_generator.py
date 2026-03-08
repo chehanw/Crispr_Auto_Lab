@@ -105,6 +105,18 @@ Generate the knockout protocol JSON now.\
 
 RETRY_SUFFIX = "\n\nPrevious attempt failed with error: {error}\nReturn corrected JSON only."
 
+# Injected when a prior review exists (revision loop).
+REVISION_SUFFIX = """\
+
+─────────────────────────────────────────────
+REVISION REQUIRED — address ALL issues below before generating the new protocol.
+A peer reviewer flagged the following critical problems with your previous attempt:
+
+{flags}
+
+Fix every item listed above. Return the corrected protocol JSON now.\
+"""
+
 
 # ── Public API ─────────────────────────────────────────────────────────────
 
@@ -112,6 +124,7 @@ def generate_protocol(
     hypothesis: ParsedHypothesis,
     sgrna_results: SgRNAResults,
     literature: str | None = None,
+    prior_review: dict | None = None,
 ) -> tuple[KnockoutProtocol, dict]:
     """
     Call Claude to produce a structured knockout protocol.
@@ -120,6 +133,8 @@ def generate_protocol(
         hypothesis:    Validated ParsedHypothesis from Stage 1.
         sgrna_results: Ranked SgRNAResults from Stage 2.
         literature:    Optional grounding text (paper abstracts, DB entries).
+        prior_review:  If set, a previous review dict whose critical flags are
+                       injected into the prompt so the model self-corrects.
 
     Returns:
         Tuple of (KnockoutProtocol, raw_dict) — Pydantic model + underlying dict.
@@ -142,6 +157,11 @@ def generate_protocol(
         sgrna_json=sgrna_results.model_dump_json(indent=2),
         literature=literature.strip() if literature else "No additional context provided.",
     )
+
+    if prior_review:
+        base_user_msg += REVISION_SUFFIX.format(
+            flags=_format_review_flags(prior_review)
+        )
 
     last_error: str | None = None
 
@@ -175,6 +195,22 @@ def generate_protocol(
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
+
+def _format_review_flags(review: dict) -> str:
+    """Render review flags as a numbered list for the revision prompt."""
+    flags = review.get("validation_flags", [])
+    if not flags:
+        return "(no specific flags — address the overall verdict)"
+    lines = []
+    for i, f in enumerate(flags, 1):
+        severity = f.get("severity", "?").upper()
+        category = f.get("category", "?")
+        issue = f.get("issue", "")
+        fix = f.get("recommendation", "")
+        lines.append(f"  {i}. [{severity}] [{category}] {issue}")
+        lines.append(f"     → Fix: {fix}")
+    return "\n".join(lines)
+
 
 def _validate_inputs(hypothesis: ParsedHypothesis) -> None:
     """Fast pre-flight check for conditions Pydantic does not enforce."""

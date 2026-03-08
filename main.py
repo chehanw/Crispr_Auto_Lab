@@ -8,17 +8,18 @@ Pipeline (stages run in order):
     1.   parse_hypothesis       → ParsedHypothesis
     1.5. check_feasibility      → FeasibilityFlags  (blocks on critical flags)
     2.   get_guides             → list[dict]  → SgRNAResults
-    3.   generate_protocol      → KnockoutProtocol
-    4+5. review_protocol + generate_execution_packet → parallel
+    3→4. revision loop      → generate_protocol → review_protocol
+                              repeats up to 3x if criticals remain
+    5.   execution packet   → generate_execution_packet
 """
 
 from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 import datetime
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # ── Project imports ────────────────────────────────────────────────────────
@@ -31,24 +32,70 @@ from agents.protocol_generator import generate_protocol
 from agents.feasibility_check import check_feasibility, print_feasibility_flags
 from agents.reviewer import review_protocol, print_review
 from agents.execution_planner import generate_execution_packet, print_execution_packet
+from agents.literature_analyst import analyze_literature, print_literature_insights
+from utils.pubmed_fetcher import fetch_papers
 from config import TOP_K_GUIDES, OUTPUT_DIR
 from models.schemas import KnockoutProtocol, ParsedHypothesis, SgRNACandidate, SgRNAResults
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
+def _fetch_literature(gene: str, context: str) -> tuple[dict | None, str]:
+    """
+    Fetch PubMed papers and extract protocol-relevant insights.
+
+    Returns:
+        (lit_result, literature_text) — lit_result is None on failure,
+        literature_text is a formatted string for the protocol generator
+        (or a fallback message if the fetch fails).
+    """
+    try:
+        papers = fetch_papers(gene, context, max_papers=4)
+        if not papers:
+            return None, "No additional context provided."
+        lit_result = analyze_literature(gene, context, papers)
+        literature_text = _format_literature_for_protocol(lit_result)
+        return lit_result, literature_text
+    except EnvironmentError as exc:
+        print(f"  WARNING: Literature grounding skipped — {exc}", file=sys.stderr)
+        return None, "No additional context provided."
+    except Exception:
+        return None, "No additional context provided."
+
+
+def _format_literature_for_protocol(lit_result: dict) -> str:
+    """Flatten literature insights into a readable string for the protocol generator."""
+    insights = lit_result.get("literature_insights", {})
+    sources = lit_result.get("source_papers", [])
+    lines = []
+    for key, label in [
+        ("recommended_methods",     "Recommended methods"),
+        ("validation_strategies",   "Validation strategies"),
+        ("control_recommendations", "Controls"),
+        ("assay_examples",          "Assays"),
+        ("common_pitfalls",         "Pitfalls to avoid"),
+    ]:
+        items = insights.get(key, [])
+        if items:
+            lines.append(f"{label}: " + "; ".join(items))
+    if sources:
+        citations = ", ".join(f"{s['title'][:60]} ({s['year']})" for s in sources[:3])
+        lines.append(f"Sources: {citations}")
+    return "\n".join(lines)
+
+
 def _build_sgrna_results(gene: str, raw_guides: list[dict]) -> SgRNAResults:
     """Convert raw dicts from sgrna_retriever into a validated SgRNAResults model."""
     candidates = [
         SgRNACandidate(
             guide_id=g["guide_id"],
-            gene=g["gene"],
-            sequence=g["sequence"],
-            efficiency_score=g["efficiency_score"],
-            off_target_score=g["off_target_score"],
-            pam=g.get("pam", "NGG"),
-            chromosome=g.get("chromosome"),
-            position=g.get("position"),
+            gene=g["gene_symbol"],
+            sequence=g["sgrna_sequence"],
+            efficiency_score=g["gc_content"],   # GC content used as efficiency proxy
+            off_target_score=0.0,               # Not available in Brunello library
+            pam=g.get("pam_sequence", "NGG"),
+            chromosome=None,
+            position=None,
         )
         for g in raw_guides
     ]
@@ -83,6 +130,14 @@ def _print_guides(sgrna_results: SgRNAResults) -> None:
             f"eff={g.efficiency_score:.2f}  off={g.off_target_score:.2f}  "
             f"pam={g.pam}"
         )
+
+
+def _print_literature_section(lit_result: dict | None) -> None:
+    _print_section("2.5. Literature Grounding")
+    if lit_result is None:
+        print("  (skipped — no papers retrieved)")
+        return
+    print_literature_insights(lit_result)
 
 
 def _print_protocol(protocol) -> None:
@@ -148,27 +203,41 @@ def run(hypothesis_text: str) -> int:
 
     sgrna_results = _build_sgrna_results(target_gene, raw_guides)
 
-    # ── Stage 3: Generate protocol ─────────────────────────────────────────
-    print("[3/5] Generating knockout protocol…")
-    try:
-        protocol, _ = generate_protocol(hypothesis, sgrna_results)
-    except EnvironmentError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    except ValueError as exc:
-        print(f"ERROR: Protocol generation failed — {exc}", file=sys.stderr)
-        return 1
+    # ── Stage 2.5: Literature grounding ───────────────────────────────────
+    print(f"[2.5/5] Fetching literature for '{target_gene}'…")
+    lit_result, literature_text = _fetch_literature(
+        target_gene,
+        f"{hypothesis.phenotype} {hypothesis.system_context}",
+    )
 
-    # ── Stages 4 + 5: Review and execution plan (parallel) ────────────────
-    print("[4+5/5] Reviewing protocol and building execution packet (parallel)…")
-    protocol_json = json.loads(protocol.model_dump_json())
+    # ── Stages 3→4: Protocol revision loop ────────────────────────────────
+    # Generate a protocol, review it, and if criticals remain feed the review
+    # back into the generator so the model can self-correct. Repeat up to
+    # MAX_REVISIONS times, then proceed with the best result regardless.
+    MAX_REVISIONS = 3
+    protocol = None
+    review: dict = {}
+    prior_review: dict | None = None
 
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        f_review = pool.submit(review_protocol, hypothesis, protocol)
-        f_packet = pool.submit(generate_execution_packet, protocol_json)
-
+    for revision in range(1, MAX_REVISIONS + 1):
+        print(f"[3/5] Generating protocol (attempt {revision}/{MAX_REVISIONS})…")
         try:
-            review = f_review.result()
+            protocol, _ = generate_protocol(
+                hypothesis,
+                sgrna_results,
+                literature=literature_text,
+                prior_review=prior_review,
+            )
+        except EnvironmentError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print(f"ERROR: Protocol generation failed — {exc}", file=sys.stderr)
+            return 1
+
+        print(f"[4/5] Reviewing protocol (attempt {revision}/{MAX_REVISIONS})…")
+        try:
+            review = review_protocol(hypothesis, protocol)
         except EnvironmentError as exc:
             print(f"ERROR: {exc}", file=sys.stderr)
             return 1
@@ -176,23 +245,40 @@ def run(hypothesis_text: str) -> int:
             print(f"ERROR: Protocol review failed — {exc}", file=sys.stderr)
             return 1
 
-        try:
-            execution_packet = f_packet.result()
-        except EnvironmentError as exc:
-            print(f"ERROR: {exc}", file=sys.stderr)
-            return 1
-        except ValueError as exc:
-            print(f"ERROR: Execution planning failed — {exc}", file=sys.stderr)
-            return 1
+        criticals = [f for f in review["validation_flags"] if f["severity"] == "critical"]
+        verdict = review["overall_verdict"]
+
+        if not criticals or verdict == "approve":
+            print(f"  ✓ Protocol accepted (verdict: {verdict}, {len(criticals)} critical(s))")
+            break
+
+        if revision < MAX_REVISIONS:
+            print(f"  ↻ {len(criticals)} critical(s) found — feeding back to generator…")
+            prior_review = review
+        else:
+            print(f"  ! Max revisions reached — {len(criticals)} critical(s) remain. Proceeding with best attempt.")
+
+    # ── Stage 5: Execution packet ──────────────────────────────────────────
+    print("[5/5] Building execution packet…")
+    protocol_json = json.loads(protocol.model_dump_json())
+    try:
+        execution_packet = generate_execution_packet(protocol_json)
+    except EnvironmentError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"ERROR: Execution planning failed — {exc}", file=sys.stderr)
+        return 1
 
     # ── Output ─────────────────────────────────────────────────────────────
     _print_hypothesis(hypothesis)
     _print_guides(sgrna_results)
+    _print_literature_section(lit_result)
     _print_protocol(protocol)
     _print_review_section(review)
     _print_execution_section(execution_packet)
 
-    output_path = _save_output(hypothesis, sgrna_results, protocol, review, execution_packet)
+    output_path = _save_output(hypothesis, sgrna_results, lit_result, protocol, review, execution_packet)
     print(f"\n  Output saved → {output_path}")
     print()
     return 0
@@ -203,6 +289,7 @@ def run(hypothesis_text: str) -> int:
 def _save_output(
     hypothesis: ParsedHypothesis,
     sgrna_results: SgRNAResults,
+    lit_result: dict | None,
     protocol: KnockoutProtocol,
     review: dict,
     execution_packet: dict,
@@ -217,6 +304,7 @@ def _save_output(
     payload = {
         "hypothesis": json.loads(hypothesis.model_dump_json()),
         "sgrna_results": json.loads(sgrna_results.model_dump_json()),
+        "literature": lit_result,
         "protocol": json.loads(protocol.model_dump_json()),
         "review": review,
         "execution_packet": execution_packet.get("execution_packet", {}),
