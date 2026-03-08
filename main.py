@@ -5,13 +5,12 @@ Usage:
     python main.py --hypothesis "Knocking out TP53 will cause uncontrolled proliferation."
 
 Pipeline (stages run in order):
-    1.   parse_hypothesis   → ParsedHypothesis
-    1.5. check_feasibility  → FeasibilityFlags  (blocks on critical flags)
-    2.   get_guides         → list[dict]  → SgRNAResults
-    3.   generate_protocol  → KnockoutProtocol
-    4.   review_protocol    → review dict (verdict + flags)
-
-Execution Planner (Stage 5) is not wired yet.
+    1.   parse_hypothesis       → ParsedHypothesis
+    1.5. check_feasibility      → FeasibilityFlags  (blocks on critical flags)
+    2.   get_guides             → list[dict]  → SgRNAResults
+    3.   generate_protocol      → KnockoutProtocol
+    4.   review_protocol        → review dict (verdict + flags)
+    5.   generate_execution_packet → execution_packet dict
 """
 
 from __future__ import annotations
@@ -31,6 +30,7 @@ from agents.sgrna_retriever import get_guides
 from agents.protocol_generator import generate_protocol
 from agents.feasibility_check import check_feasibility, print_feasibility_flags
 from agents.reviewer import review_protocol, print_review
+from agents.execution_planner import generate_execution_packet, print_execution_packet
 from config import TOP_K_GUIDES, OUTPUT_DIR
 from models.schemas import SgRNACandidate, SgRNAResults
 
@@ -95,6 +95,11 @@ def _print_review_section(review: dict) -> None:
     print_review(review)
 
 
+def _print_execution_section(packet: dict) -> None:
+    _print_section("5. Execution Packet")
+    print_execution_packet(packet)
+
+
 # ── Main pipeline ──────────────────────────────────────────────────────────
 
 def run(hypothesis_text: str) -> int:
@@ -126,7 +131,7 @@ def run(hypothesis_text: str) -> int:
         return 1
 
     # ── Stage 2: Retrieve sgRNAs ───────────────────────────────────────────
-    print(f"[2/4] Looking up sgRNAs for '{target_gene}'…")
+    print(f"[2/5] Looking up sgRNAs for '{target_gene}'…")
     try:
         raw_guides = get_guides(target_gene, max_guides=TOP_K_GUIDES)
     except (ValueError, RuntimeError) as exc:
@@ -144,7 +149,7 @@ def run(hypothesis_text: str) -> int:
     sgrna_results = _build_sgrna_results(target_gene, raw_guides)
 
     # ── Stage 3: Generate protocol ─────────────────────────────────────────
-    print("[3/4] Generating knockout protocol…")
+    print("[3/5] Generating knockout protocol…")
     try:
         protocol, _ = generate_protocol(hypothesis, sgrna_results)
     except EnvironmentError as exc:
@@ -155,7 +160,7 @@ def run(hypothesis_text: str) -> int:
         return 1
 
     # ── Stage 4: Review protocol ───────────────────────────────────────────
-    print("[4/4] Reviewing protocol…")
+    print("[4/5] Reviewing protocol…")
     try:
         review = review_protocol(hypothesis, protocol)
     except EnvironmentError as exc:
@@ -165,13 +170,25 @@ def run(hypothesis_text: str) -> int:
         print(f"ERROR: Protocol review failed — {exc}", file=sys.stderr)
         return 1
 
+    # ── Stage 5: Execution plan ────────────────────────────────────────────
+    print("[5/5] Building execution packet…")
+    try:
+        execution_packet = generate_execution_packet(json.loads(protocol.model_dump_json()))
+    except EnvironmentError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 1
+    except ValueError as exc:
+        print(f"ERROR: Execution planning failed — {exc}", file=sys.stderr)
+        return 1
+
     # ── Output ─────────────────────────────────────────────────────────────
     _print_hypothesis(hypothesis)
     _print_guides(sgrna_results)
     _print_protocol(protocol)
     _print_review_section(review)
+    _print_execution_section(execution_packet)
 
-    output_path = _save_output(hypothesis, sgrna_results, protocol, review)
+    output_path = _save_output(hypothesis, sgrna_results, protocol, review, execution_packet)
     print(f"\n  Output saved → {output_path}")
     print()
     return 0
@@ -179,7 +196,7 @@ def run(hypothesis_text: str) -> int:
 
 # ── Output serialization ───────────────────────────────────────────────────
 
-def _save_output(hypothesis, sgrna_results, protocol, review) -> Path:
+def _save_output(hypothesis, sgrna_results, protocol, review, execution_packet) -> Path:
     """Serialize full pipeline result to /output/<timestamp>_<gene>.json."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -192,6 +209,7 @@ def _save_output(hypothesis, sgrna_results, protocol, review) -> Path:
         "sgrna_results": json.loads(sgrna_results.model_dump_json()),
         "protocol": json.loads(protocol.model_dump_json()),
         "review": review,
+        "execution_packet": execution_packet.get("execution_packet", {}),
     }
 
     output_path.write_text(json.dumps(payload, indent=2))
