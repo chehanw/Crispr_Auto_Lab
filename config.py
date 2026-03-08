@@ -21,7 +21,8 @@ MODEL_MAIN = "claude-sonnet-4-6"       # orchestration + protocol gen
 MODEL_FAST = "claude-haiku-4-5-20251001"  # parser, reviewer (high-frequency)
 
 # ── LLM Sampling ──────────────────────────────────────────────────────────
-MAX_TOKENS = 4096
+MAX_TOKENS = 4096          # default for fast/short outputs (parser, reviewer, etc.)
+MAX_TOKENS_PROTOCOL = 8192 # protocol generator produces verbose JSON — needs more room
 TEMPERATURE = 0.2   # low — we want deterministic structured outputs
 
 # ── sgRNA Retrieval ────────────────────────────────────────────────────────

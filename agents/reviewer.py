@@ -55,11 +55,18 @@ Schema:
       "severity": "<one of: info | warning | critical>",
       "category": "<one of: controls | guide_selection | validation | assay_design | statistics | timeline | safety | feasibility>",
       "issue": "<specific scientific problem — be precise, not vague>",
-      "recommendation": "<concrete fix, not a platitude>"
+      "recommendation": "<concrete fix, not a platitude>",
+      "patchable": <true | false>
     }
   ],
   "review_summary": "<2–4 sentence verdict. Be direct. State the biggest risk first.>"
 }
+
+Patchable classification rules:
+- patchable: true  → the fix is LOCAL: add a missing control, add a backup guide, append a validation assay, add a safety note, add a rescue recommendation, add a statistical note. The core protocol structure remains valid.
+- patchable: false → the fix requires STRUCTURAL REWRITE: wrong cell line, wrong delivery method, wrong assay class for the phenotype, invalid biological premise, experiment is fundamentally infeasible as designed.
+
+When in doubt, prefer patchable: true. Only mark patchable: false for issues that cannot be fixed by appending or annotating the existing protocol.
 
 Scoring guide for overall_verdict:
 - approve:               No significant issues. Protocol is solid.
@@ -177,6 +184,7 @@ def _parse_and_validate(text: str) -> dict:
     if not isinstance(data["validation_flags"], list):
         raise ValueError("validation_flags must be a list.")
 
+    validated_flags = []
     for i, flag in enumerate(data["validation_flags"]):
         for key in ("severity", "category", "issue", "recommendation"):
             if key not in flag:
@@ -185,6 +193,9 @@ def _parse_and_validate(text: str) -> dict:
             raise ValueError(f"Flag {i} invalid severity: {flag['severity']!r}")
         if flag["category"] not in VALID_CATEGORIES:
             raise ValueError(f"Flag {i} invalid category: {flag['category']!r}")
+        # Build new dict with patchable coerced to bool — never mutate the original
+        validated_flags.append({**flag, "patchable": bool(flag.get("patchable", True))})
+    data = {**data, "validation_flags": validated_flags}
 
     if not isinstance(data["review_summary"], str) or not data["review_summary"].strip():
         raise ValueError("review_summary must be a non-empty string.")
@@ -209,7 +220,8 @@ def print_review(review: dict) -> None:
         print()
         for f in flags:
             icon = {"critical": "✗", "warning": "!", "info": "i"}.get(f["severity"], "?")
-            print(f"  [{icon}] [{f['severity'].upper()}] [{f['category']}]")
+            patch_tag = "[patch]" if f.get("patchable", True) else "[regen]"
+            print(f"  [{icon}] [{f['severity'].upper()}] [{f['category']}] {patch_tag}")
             print(f"      Issue : {f['issue']}")
             print(f"      Fix   : {f['recommendation']}")
 
