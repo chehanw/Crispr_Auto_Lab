@@ -165,11 +165,10 @@ def _parse_llm_flags(text: str) -> list[FeasibilityFlag]:
 
     flags = []
     for item in data.get("flags", []):
-        severity = item.get("severity", "warning")
-        if severity not in ("warning", "blocker"):
-            severity = "warning"
+        # LLM-generated flags are capped at "warning" — only the curated
+        # hardcoded lookup should ever halt the pipeline with a blocker.
         flags.append(FeasibilityFlag(
-            severity=severity,
+            severity="warning",
             issue=item.get("issue", ""),
             recommendation=item.get("recommendation", ""),
         ))

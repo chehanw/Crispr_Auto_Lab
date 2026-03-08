@@ -405,29 +405,32 @@ const ExecutionTimelineCard: React.FC<{ result: PipelineResult }> = ({ result })
       <div style={{ marginBottom: 28 }}>
         <p style={{ ...s.fieldLabel, marginBottom: 12 }}>Phase Overview ({maxDay} days)</p>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-          {phases.map((phase) => {
-            const leftPct  = ((phase.startDay - 1) / maxDay) * 100;
-            const widthPct = Math.max((phase.durationDays / maxDay) * 100, 2);
-            return (
-              <div key={phase.title} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                <span style={s.phaseLabel}>{phase.title}</span>
-                <div style={{ flex: 1, position: 'relative' as const, height: 20, background: 'var(--color-surface-dim)', borderRadius: 99, border: '1px solid var(--color-border)' }}>
-                  <div
-                    style={{
-                      position: 'absolute' as const,
-                      left: `${leftPct}%`,
-                      width: `${widthPct}%`,
-                      height: '100%',
-                      background: phase.color,
-                      borderRadius: 99,
-                      opacity: 0.85,
-                    }}
-                  />
+          {(() => {
+            const totalSpan = phases.reduce((acc, p) => Math.max(acc, p.startDay - 1 + p.durationDays), 0) || 1;
+            return phases.map((phase) => {
+              const leftPct  = ((phase.startDay - 1) / totalSpan) * 100;
+              const widthPct = (phase.durationDays / totalSpan) * 100;
+              return (
+                <div key={phase.title} style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <span style={s.phaseLabel}>{phase.title}</span>
+                  <div style={{ flex: 1, position: 'relative' as const, height: 20, background: 'var(--color-surface-dim)', borderRadius: 99, border: '1px solid var(--color-border)', overflow: 'hidden' }}>
+                    <div
+                      style={{
+                        position: 'absolute' as const,
+                        left: `${leftPct}%`,
+                        width: `${widthPct}%`,
+                        height: '100%',
+                        background: phase.color,
+                        borderRadius: 99,
+                        opacity: 0.85,
+                      }}
+                    />
+                  </div>
+                  <span style={s.phaseDays}>{phase.durationDays}d</span>
                 </div>
-                <span style={s.phaseDays}>{phase.durationDays}d</span>
-              </div>
-            );
-          })}
+              );
+            });
+          })()}
         </div>
 
         {/* Day axis */}
@@ -506,21 +509,10 @@ function buildPhases(steps: PipelineResult['protocol_steps']) {
 // ── Main component ────────────────────────────────────────────────────────
 
 const ResultsPanel: React.FC<ResultsPanelProps> = ({ result }) => {
-  if (!result) {
-    return (
-      <div style={{ ...s.card, ...s.emptyState }}>
-        <div style={s.emptyHex}>⬡</div>
-        <p style={s.emptyTitle}>No results yet</p>
-        <p style={s.emptyBody}>
-          Enter a hypothesis above and click <strong>Run Pipeline</strong> to generate a full CRISPR
-          experiment design, or <strong>Load from Cache</strong> to replay a previous result.
-        </p>
-      </div>
-    );
-  }
+  if (!result) return null;
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
+    <div style={{ display: 'flex', flexDirection: 'column', gap: 14, animation: 'fadeIn 0.3s ease' }}>
       {/* Row 1: Hypothesis — full width */}
       <HypothesisCard result={result} />
 
@@ -560,19 +552,19 @@ const s: Record<string, React.CSSProperties> = {
     display: 'flex',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: '14px 20px',
+    padding: '11px 18px',
     borderBottom: '1px solid var(--color-border)',
     background: 'var(--color-surface-dim)',
   },
   cardTitle: {
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: 700,
     letterSpacing: '0.07em',
     textTransform: 'uppercase',
-    color: 'var(--color-text-secondary)',
+    color: 'var(--color-text-muted)',
   },
   cardBody: {
-    padding: '20px',
+    padding: '16px 18px',
   },
 
   // Empty state
@@ -618,30 +610,30 @@ const s: Record<string, React.CSSProperties> = {
   // Hypothesis
   hypothesis: {
     fontSize: 15,
-    fontStyle: 'italic',
+    fontWeight: 500,
     color: 'var(--color-text-primary)',
-    lineHeight: 1.75,
+    lineHeight: 1.7,
     borderLeft: '3px solid var(--color-accent)',
-    paddingLeft: 16,
+    paddingLeft: 14,
     margin: 0,
   },
 
   // Design grid
   designGrid: {
     display: 'grid',
-    gridTemplateColumns: 'repeat(auto-fit, minmax(160px, 1fr))',
-    gap: '12px 20px',
+    gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))',
+    gap: '10px 18px',
   },
   fieldLabel: {
     fontSize: 10,
     fontWeight: 700,
-    letterSpacing: '0.09em',
+    letterSpacing: '0.08em',
     textTransform: 'uppercase',
     color: 'var(--color-text-muted)',
-    marginBottom: 3,
+    marginBottom: 2,
   },
   fieldValue: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: 500,
     color: 'var(--color-text-primary)',
     lineHeight: 1.4,
@@ -669,16 +661,18 @@ const s: Record<string, React.CSSProperties> = {
 
   // Pills / badges
   verdictPill: {
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: 700,
     letterSpacing: '0.06em',
-    padding: '3px 10px',
+    textTransform: 'uppercase' as const,
+    padding: '3px 9px',
     borderRadius: 20,
   },
   countPill: {
-    fontSize: 11,
-    fontWeight: 600,
-    padding: '3px 10px',
+    fontSize: 10,
+    fontWeight: 700,
+    letterSpacing: '0.04em',
+    padding: '3px 9px',
     borderRadius: 20,
   },
   patchedTag: {
@@ -700,7 +694,7 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 13,
   },
   th: {
-    padding: '8px 12px',
+    padding: '7px 12px',
     textAlign: 'left' as const,
     fontSize: 10,
     fontWeight: 700,
@@ -712,7 +706,7 @@ const s: Record<string, React.CSSProperties> = {
     whiteSpace: 'nowrap' as const,
   },
   td: {
-    padding: '10px 12px',
+    padding: '9px 12px',
     borderBottom: '1px solid var(--color-border)',
     color: 'var(--color-text-primary)',
     verticalAlign: 'middle' as const,
@@ -745,7 +739,7 @@ const s: Record<string, React.CSSProperties> = {
     marginBottom: 4,
   },
   metaChip: {
-    padding: '8px 14px',
+    padding: '7px 12px',
     background: 'var(--color-surface-dim)',
     border: '1px solid var(--color-border)',
     borderRadius: 'var(--radius-md)',
@@ -760,7 +754,7 @@ const s: Record<string, React.CSSProperties> = {
   },
   metaChipValue: {
     fontSize: 13,
-    fontWeight: 500,
+    fontWeight: 600,
     color: 'var(--color-text-primary)',
   },
   stepTrack: {

@@ -22,6 +22,7 @@ class EditType(str, Enum):
 class CellLine(str, Enum):
     HEK293 = "HEK293"
     HELA = "HeLa"
+    HCT116 = "HCT116"
     JURKAT = "Jurkat"
     PRIMARY = "primary"
     OTHER = "other"

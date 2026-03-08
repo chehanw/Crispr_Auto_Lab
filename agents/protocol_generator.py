@@ -29,7 +29,7 @@ from pydantic import ValidationError
 load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from config import MODEL_MAIN, MAX_TOKENS, TEMPERATURE
+from config import MODEL_MAIN, MAX_TOKENS_PROTOCOL, TEMPERATURE
 from models.schemas import (
     KnockoutProtocol,
     ParsedHypothesis,
@@ -173,7 +173,7 @@ def generate_protocol(
         try:
             message = client.messages.create(
                 model=MODEL_MAIN,
-                max_tokens=MAX_TOKENS,
+                max_tokens=MAX_TOKENS_PROTOCOL,
                 temperature=TEMPERATURE,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
