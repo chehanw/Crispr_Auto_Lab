@@ -28,7 +28,8 @@ from pydantic import BaseModel
 ROOT = Path(__file__).parent
 sys.path.insert(0, str(ROOT))
 
-from agents.feasibility_check import check_feasibility
+from agents.confidence_scorer import compute_confidence
+from agents.feasibility_check import check_feasibility, COMMON_ESSENTIAL_GENES
 from agents.literature_analyst import analyze_literature
 from agents.protocol_generator import generate_protocol
 from agents.protocol_patcher import apply_patches
@@ -79,10 +80,34 @@ def _build_sgrna_results(gene: str, raw_guides: list[dict]) -> SgRNAResults:
 
 def _fetch_literature(gene: str, context: str) -> tuple[dict | None, str]:
     try:
-        papers = fetch_papers(gene, context, max_papers=4)
+        papers = fetch_papers(gene, context, max_papers=5)
         if not papers:
             return None, "No additional context provided."
         lit_result = analyze_literature(gene, context, papers)
+
+        # Enrich source_papers with pmid/authors from the fetched metadata.
+        # Match by title (case-insensitive prefix) since LLM may truncate slightly.
+        fetched_by_title = {p["title"].lower(): p for p in papers}
+        enriched = []
+        for sp in lit_result.get("source_papers", []):
+            sp_title_lower = sp.get("title", "").lower()
+            # Find the closest fetched paper by checking if titles share the first 40 chars
+            match = fetched_by_title.get(sp_title_lower)
+            if not match:
+                for title_key, fetched in fetched_by_title.items():
+                    if sp_title_lower[:40] in title_key or title_key[:40] in sp_title_lower:
+                        match = fetched
+                        break
+            pmid     = (match or {}).get("pmid", "")
+            authors  = (match or {}).get("authors", "")
+            enriched.append({
+                **sp,
+                "pmid":       pmid,
+                "authors":    authors,
+                "pubmed_url": f"https://pubmed.ncbi.nlm.nih.gov/{pmid}/" if pmid else "",
+            })
+        lit_result = {**lit_result, "source_papers": enriched}
+
         lines = []
         insights = lit_result.get("literature_insights", {})
         for key, label in [
@@ -101,7 +126,8 @@ def _fetch_literature(gene: str, context: str) -> tuple[dict | None, str]:
 # ── Transform backend → frontend response shape ────────────────────────────
 
 def _to_response(hypothesis, feasibility_flags, sgrna_results, lit_result,
-                 protocol, review, patches_applied, exec_packet) -> dict:
+                 protocol, review, patches_applied, exec_packet,
+                 confidence=None) -> dict:
     blockers = [f for f in feasibility_flags if f.severity == "blocker"]
     warnings  = [f for f in feasibility_flags if f.severity == "warning"]
     feasibility_verdict = "block" if blockers else ("warn" if warnings else "pass")
@@ -156,11 +182,21 @@ def _to_response(hypothesis, feasibility_flags, sgrna_results, lit_result,
 
         "literature_sources": [
             {
-                "title":   p.get("title", ""),
-                "journal": p.get("journal", ""),
-                "year":    str(p.get("year", "")),
+                "title":       p.get("title", ""),
+                "authors":     p.get("authors", ""),
+                "journal":     p.get("journal", ""),
+                "year":        str(p.get("year", "")),
+                "key_finding": p.get("key_finding", ""),
+                "pubmed_url":  p.get("pubmed_url", ""),
             }
             for p in (lit_result or {}).get("source_papers", [])
+        ],
+
+        "confidence_score":   confidence.score if confidence else 100,
+        "confidence_label":   confidence.label if confidence else "High",
+        "confidence_factors": [
+            {"label": f.label, "penalty": f.penalty, "triggered": f.triggered}
+            for f in (confidence.factors if confidence else [])
         ],
     }
 
@@ -203,6 +239,19 @@ def _run_pipeline_streaming(hypothesis_text: str, event_queue: queue.Queue) -> N
         )
         emit("stage", id="literature", status="done")
 
+        # Stage 4.5 — Confidence evaluation
+        emit("stage", id="confidence", status="active")
+        confidence_result = compute_confidence(
+            is_essential_gene=hypothesis.target_gene.upper() in COMMON_ESSENTIAL_GENES,
+            cell_line_value=hypothesis.cell_line.value,
+            best_sgrna_efficiency=max(
+                (c.efficiency_score for c in sgrna_results.candidates), default=0.0
+            ),
+            literature_source_count=len((lit_result or {}).get("source_papers", [])),
+            feasibility_flag_count=len(flags),
+        )
+        emit("stage", id="confidence", status="done")
+
         # Stage 5 — Protocol generation
         emit("stage", id="protocol", status="active")
         protocol, _ = generate_protocol(hypothesis, sgrna_results, literature=literature_text)
@@ -210,7 +259,7 @@ def _run_pipeline_streaming(hypothesis_text: str, event_queue: queue.Queue) -> N
 
         # Stage 6 — Review + patch
         emit("stage", id="review", status="active")
-        review = review_protocol(hypothesis, protocol)
+        review = review_protocol(hypothesis, protocol, sgrna_results)
         protocol_json = json.loads(protocol.model_dump_json())
         patches_applied: list[str] = []
 
@@ -223,7 +272,7 @@ def _run_pipeline_streaming(hypothesis_text: str, event_queue: queue.Queue) -> N
                 literature=literature_text, prior_review=review,
             )
             protocol_json = json.loads(protocol.model_dump_json())
-            review = review_protocol(hypothesis, protocol)
+            review = review_protocol(hypothesis, protocol, sgrna_results)
         elif criticals:
             protocol_json, patches_applied = apply_patches(protocol_json, review, raw_guides)
 
@@ -239,6 +288,7 @@ def _run_pipeline_streaming(hypothesis_text: str, event_queue: queue.Queue) -> N
         result = _to_response(
             hypothesis, flags, sgrna_results, lit_result,
             protocol, review, patches_applied, exec_packet,
+            confidence=confidence_result,
         )
         emit("result", data=result)
 
@@ -361,9 +411,12 @@ async def demo_endpoint(name: str):
         ],
         "literature_sources": [
             {
-                "title":   p.get("title", ""),
-                "journal": p.get("journal", ""),
-                "year":    str(p.get("year", "")),
+                "title":       p.get("title", ""),
+                "authors":     p.get("authors", ""),
+                "journal":     p.get("journal", ""),
+                "year":        str(p.get("year", "")),
+                "key_finding": p.get("key_finding", ""),
+                "pubmed_url":  p.get("pubmed_url", ""),
             }
             for p in (lit or {}).get("source_papers", [])
         ],

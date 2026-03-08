@@ -24,6 +24,12 @@ export interface FeasibilityFlag {
   message: string;
 }
 
+export interface ConfidenceFactor {
+  label: string;
+  penalty: number;
+  triggered: boolean;
+}
+
 export interface PipelineResult {
   // Hypothesis
   hypothesis_text: string;
@@ -60,7 +66,19 @@ export interface PipelineResult {
   reagents: { item: string; purpose: string }[];
 
   // Literature
-  literature_sources: { title: string; journal: string; year: string }[];
+  literature_sources: {
+    title: string;
+    authors: string;
+    journal: string;
+    year: string;
+    key_finding: string;
+    pubmed_url: string;
+  }[];
+
+  // Experiment confidence
+  confidence_score: number;
+  confidence_label: 'High' | 'Moderate' | 'Low';
+  confidence_factors: ConfidenceFactor[];
 }
 
 interface ResultsPanelProps {
@@ -123,7 +141,108 @@ const HypothesisCard: React.FC<{ result: PipelineResult }> = ({ result }) => (
   </Card>
 );
 
-// ── 2. Parsed Experiment Design card ─────────────────────────────────────
+// ── 2. Experiment Confidence card ─────────────────────────────────────────
+
+const CONFIDENCE_CONFIG: Record<string, { color: string; bg: string; border: string }> = {
+  High:     { color: 'var(--color-success)',  bg: 'var(--color-success-bg)',  border: '#86efac' },
+  Moderate: { color: 'var(--color-warning)',  bg: 'var(--color-warning-bg)',  border: '#fcd34d' },
+  Low:      { color: 'var(--color-critical)', bg: 'var(--color-critical-bg)', border: '#fca5a5' },
+};
+
+const ExperimentConfidenceCard: React.FC<{ result: PipelineResult }> = ({ result }) => {
+  const cfg = CONFIDENCE_CONFIG[result.confidence_label] ?? CONFIDENCE_CONFIG.Moderate;
+  const isLow = result.confidence_score < 50;
+
+  return (
+    <Card
+      title="Experiment Confidence"
+      badge={
+        <span style={{ ...s.verdictPill, color: cfg.color, background: cfg.bg, border: `1px solid ${cfg.border}` }}>
+          {result.confidence_label} confidence
+        </span>
+      }
+    >
+      {/* Score display */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: 20, marginBottom: 18 }}>
+        <span style={{ fontSize: 48, fontWeight: 800, lineHeight: 1, color: cfg.color, fontFamily: 'var(--font-mono)' }}>
+          {result.confidence_score}%
+        </span>
+        <div style={{ flex: 1 }}>
+          <div style={{ height: 8, background: 'var(--color-border)', borderRadius: 99, overflow: 'hidden' }}>
+            <div
+              style={{
+                width: `${result.confidence_score}%`,
+                height: '100%',
+                background: cfg.color,
+                borderRadius: 99,
+                transition: 'width 0.4s ease',
+              }}
+            />
+          </div>
+          <p style={{ ...s.fieldLabel, marginTop: 6 }}>
+            {result.confidence_score > 75
+              ? 'Experiment is likely to produce interpretable results.'
+              : result.confidence_score >= 50
+              ? 'Experiment may succeed but has notable risk factors.'
+              : 'Multiple risk factors detected — see factors below.'}
+          </p>
+        </div>
+      </div>
+
+      {/* Warning banner for low-confidence experiments */}
+      {isLow && (
+        <div style={{
+          padding: '10px 14px',
+          marginBottom: 16,
+          borderRadius: 'var(--radius-md)',
+          background: 'var(--color-critical-bg)',
+          border: '1px solid #fca5a5',
+          display: 'flex',
+          gap: 8,
+          alignItems: 'flex-start',
+        }}>
+          <span style={{ color: 'var(--color-critical)', fontWeight: 700, fontSize: 14, flexShrink: 0 }}>!</span>
+          <span style={{ fontSize: 13, color: 'var(--color-text-primary)', lineHeight: 1.5 }}>
+            Low confidence experiment. Consider adjusting gene, model system, or phenotype.
+          </span>
+        </div>
+      )}
+
+      {/* Factors list */}
+      <p style={{ ...s.fieldLabel, marginBottom: 8 }}>Factors affecting confidence</p>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+        {result.confidence_factors.map((f, i) => (
+          <div
+            key={i}
+            style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: 10,
+              padding: '7px 10px',
+              borderRadius: 'var(--radius-sm)',
+              background: f.triggered ? 'var(--color-warning-bg)' : 'var(--color-surface-dim)',
+              border: `1px solid ${f.triggered ? '#fcd34d' : 'var(--color-border)'}`,
+            }}
+          >
+            <span style={{
+              fontSize: 11,
+              fontWeight: 700,
+              flexShrink: 0,
+              color: f.triggered ? 'var(--color-warning)' : 'var(--color-success)',
+            }}>
+              {f.triggered ? `−${f.penalty}` : '✓'}
+            </span>
+            <span style={{ fontSize: 13, color: 'var(--color-text-primary)', flex: 1 }}>
+              {f.label}
+            </span>
+          </div>
+        ))}
+      </div>
+    </Card>
+  );
+};
+
+// ── 3. Parsed Experiment Design card ─────────────────────────────────────
 
 const ExperimentDesignCard: React.FC<{ result: PipelineResult }> = ({ result }) => (
   <Card title="Parsed Experiment Design">
@@ -264,7 +383,59 @@ const GcBar: React.FC<{ value: number }> = ({ value }) => {
   );
 };
 
-// ── 5. Protocol Summary card ──────────────────────────────────────────────
+// ── 5. Literature Evidence card ───────────────────────────────────────────
+
+const LiteratureEvidenceCard: React.FC<{ result: PipelineResult }> = ({ result }) => {
+  const papers = result.literature_sources;
+
+  return (
+    <Card title="Literature Evidence">
+      {papers.length === 0 ? (
+        <p style={{ ...s.emptyInline, fontStyle: 'italic' }}>
+          No directly relevant literature found. Hypothesis may be novel.
+        </p>
+      ) : (
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {papers.map((paper, i) => (
+            <div key={i} style={s.paperCard}>
+              <p style={s.paperTitle}>{paper.title}</p>
+
+              <div style={s.paperMeta}>
+                {paper.authors && (
+                  <span style={s.paperAuthor}>{paper.authors}</span>
+                )}
+                {paper.authors && <span style={s.paperMetaDot}>·</span>}
+                <span style={s.paperYear}>{paper.year}</span>
+                <span style={s.paperMetaDot}>·</span>
+                <span style={s.paperJournal}>{paper.journal}</span>
+              </div>
+
+              {paper.key_finding && (
+                <p style={s.paperFinding}>
+                  <span style={s.paperFindingLabel}>Finding: </span>
+                  {paper.key_finding}
+                </p>
+              )}
+
+              {paper.pubmed_url ? (
+                <a
+                  href={paper.pubmed_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={s.pubmedLink}
+                >
+                  View on PubMed →
+                </a>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      )}
+    </Card>
+  );
+};
+
+// ── 6. Protocol Summary card ──────────────────────────────────────────────
 
 const ProtocolSummaryCard: React.FC<{ result: PipelineResult }> = ({ result }) => (
   <Card title="Protocol Summary">
@@ -516,7 +687,10 @@ const ResultsPanel: React.FC<ResultsPanelProps> = ({ result }) => {
       {/* Row 1: Hypothesis — full width */}
       <HypothesisCard result={result} />
 
-      {/* Row 2: Experiment Design + Feasibility — side by side */}
+      {/* Row 2: Experiment Confidence — full width */}
+      <ExperimentConfidenceCard result={result} />
+
+      {/* Row 3: Experiment Design + Feasibility — side by side */}
       <div style={s.twoCol}>
         <ExperimentDesignCard result={result} />
         <FeasibilityCard      result={result} />
@@ -525,13 +699,16 @@ const ResultsPanel: React.FC<ResultsPanelProps> = ({ result }) => {
       {/* Row 3: sgRNAs table — full width */}
       <SgRNATableCard result={result} />
 
-      {/* Row 4: Protocol Summary — full width */}
+      {/* Row 4: Literature Evidence — full width */}
+      <LiteratureEvidenceCard result={result} />
+
+      {/* Row 5: Protocol Summary — full width */}
       <ProtocolSummaryCard result={result} />
 
-      {/* Row 5: Scientific Review — full width */}
+      {/* Row 6: Scientific Review — full width */}
       <ScientificReviewCard result={result} />
 
-      {/* Row 6: Execution Timeline — full width */}
+      {/* Row 7: Execution Timeline — full width */}
       <ExecutionTimelineCard result={result} />
     </div>
   );
@@ -833,6 +1010,67 @@ const s: Record<string, React.CSSProperties> = {
     fontSize: 10,
     color: 'var(--color-text-muted)',
     fontStyle: 'italic',
+  },
+
+  // Literature paper cards
+  paperCard: {
+    padding: '12px 14px',
+    borderRadius: 'var(--radius-md)',
+    border: '1px solid var(--color-border)',
+    background: 'var(--color-surface-dim)',
+    display: 'flex',
+    flexDirection: 'column' as const,
+    gap: 5,
+  },
+  paperTitle: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: 'var(--color-text-primary)',
+    lineHeight: 1.45,
+  },
+  paperMeta: {
+    display: 'flex',
+    alignItems: 'center',
+    flexWrap: 'wrap' as const,
+    gap: 4,
+  },
+  paperAuthor: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--color-accent)',
+  },
+  paperMetaDot: {
+    fontSize: 12,
+    color: 'var(--color-text-muted)',
+  },
+  paperYear: {
+    fontSize: 12,
+    fontWeight: 600,
+    color: 'var(--color-text-secondary)',
+  },
+  paperJournal: {
+    fontSize: 12,
+    fontStyle: 'italic' as const,
+    color: 'var(--color-text-muted)',
+  },
+  paperFinding: {
+    fontSize: 12,
+    color: 'var(--color-text-secondary)',
+    lineHeight: 1.55,
+    marginTop: 2,
+  },
+  paperFindingLabel: {
+    fontWeight: 700,
+    color: 'var(--color-text-primary)',
+  },
+  pubmedLink: {
+    fontSize: 11,
+    fontWeight: 600,
+    color: 'var(--color-accent)',
+    textDecoration: 'none',
+    letterSpacing: '0.02em',
+    marginTop: 2,
+    alignSelf: 'flex-start' as const,
   },
 
   // Gantt
