@@ -20,19 +20,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import anthropic
 from dotenv import load_dotenv
 
+# TODO: remove sys.path hack after proper packaging (pyproject.toml)
 load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import MODEL_FAST, MAX_TOKENS
+from utils.llm_utils import extract_json
 
 MAX_RETRIES = 3
 
@@ -118,7 +118,7 @@ def analyze_literature(
         EnvironmentError:   If ANTHROPIC_API_KEY is not set.
         anthropic.APIError: On unrecoverable API failures.
     """
-    _validate_inputs(target_gene, papers)
+    _validate_inputs(target_gene, experimental_context, papers)
 
     api_key = os.environ.get("ANTHROPIC_API_KEY", "")
     if not api_key:
@@ -132,7 +132,7 @@ def analyze_literature(
         papers_text=papers_text,
     )
 
-    last_error: Optional[str] = None
+    last_error: str | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         user_content = base_msg
@@ -148,9 +148,9 @@ def analyze_literature(
                 messages=[{"role": "user", "content": user_content}],
             )
             raw = message.content[0].text.strip()
-            return _parse_and_validate(raw, papers)
+            return _parse_and_validate(raw)
 
-        except (ValueError, json.JSONDecodeError) as exc:
+        except ValueError as exc:
             last_error = str(exc)
             if attempt == MAX_RETRIES:
                 raise ValueError(
@@ -163,9 +163,11 @@ def analyze_literature(
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
-def _validate_inputs(target_gene: str, papers: list[dict]) -> None:
+def _validate_inputs(target_gene: str, experimental_context: str, papers: list[dict]) -> None:
     if not target_gene or not target_gene.strip():
         raise ValueError("target_gene must be a non-empty string.")
+    if not experimental_context or not experimental_context.strip():
+        raise ValueError("experimental_context must be a non-empty string.")
     if not papers:
         raise ValueError("papers list must not be empty.")
     for i, p in enumerate(papers):
@@ -185,15 +187,8 @@ def _format_papers(papers: list[dict]) -> str:
     return "\n\n".join(parts)
 
 
-def _parse_and_validate(text: str, papers: list[dict]) -> dict:
-    fenced = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
-    if fenced:
-        text = fenced.group(1).strip()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"JSON parse error: {exc}\nRaw: {text[:400]}") from exc
+def _parse_and_validate(text: str) -> dict:
+    data = extract_json(text)
 
     if "literature_insights" not in data:
         raise ValueError("Missing key: 'literature_insights'")

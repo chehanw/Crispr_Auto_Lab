@@ -9,8 +9,7 @@ Pipeline (stages run in order):
     1.5. check_feasibility      → FeasibilityFlags  (blocks on critical flags)
     2.   get_guides             → list[dict]  → SgRNAResults
     3.   generate_protocol      → KnockoutProtocol
-    4.   review_protocol        → review dict (verdict + flags)
-    5.   generate_execution_packet → execution_packet dict
+    4+5. review_protocol + generate_execution_packet → parallel
 """
 
 from __future__ import annotations
@@ -19,6 +18,7 @@ import argparse
 import json
 import sys
 import datetime
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 # ── Project imports ────────────────────────────────────────────────────────
@@ -32,7 +32,7 @@ from agents.feasibility_check import check_feasibility, print_feasibility_flags
 from agents.reviewer import review_protocol, print_review
 from agents.execution_planner import generate_execution_packet, print_execution_packet
 from config import TOP_K_GUIDES, OUTPUT_DIR
-from models.schemas import SgRNACandidate, SgRNAResults
+from models.schemas import KnockoutProtocol, ParsedHypothesis, SgRNACandidate, SgRNAResults
 
 
 # ── Helpers ────────────────────────────────────────────────────────────────
@@ -106,7 +106,7 @@ def run(hypothesis_text: str) -> int:
     """Execute the pipeline. Returns 0 on success, 1 on handled error."""
 
     # ── Stage 1: Parse hypothesis ──────────────────────────────────────────
-    print("\n[1/4] Parsing hypothesis…")
+    print("\n[1/5] Parsing hypothesis…")
     try:
         hypothesis = parse_hypothesis(hypothesis_text)
     except EnvironmentError as exc:
@@ -119,7 +119,7 @@ def run(hypothesis_text: str) -> int:
     target_gene = hypothesis.target_gene
 
     # ── Stage 1.5: Feasibility check ──────────────────────────────────────
-    print(f"[1.5/4] Checking biological feasibility…")
+    print(f"[1.5/5] Checking biological feasibility…")
     flags = check_feasibility(hypothesis)
     print_feasibility_flags(flags)
     blockers = [f for f in flags if f.is_blocker()]
@@ -159,27 +159,31 @@ def run(hypothesis_text: str) -> int:
         print(f"ERROR: Protocol generation failed — {exc}", file=sys.stderr)
         return 1
 
-    # ── Stage 4: Review protocol ───────────────────────────────────────────
-    print("[4/5] Reviewing protocol…")
-    try:
-        review = review_protocol(hypothesis, protocol)
-    except EnvironmentError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    except ValueError as exc:
-        print(f"ERROR: Protocol review failed — {exc}", file=sys.stderr)
-        return 1
+    # ── Stages 4 + 5: Review and execution plan (parallel) ────────────────
+    print("[4+5/5] Reviewing protocol and building execution packet (parallel)…")
+    protocol_json = json.loads(protocol.model_dump_json())
 
-    # ── Stage 5: Execution plan ────────────────────────────────────────────
-    print("[5/5] Building execution packet…")
-    try:
-        execution_packet = generate_execution_packet(json.loads(protocol.model_dump_json()))
-    except EnvironmentError as exc:
-        print(f"ERROR: {exc}", file=sys.stderr)
-        return 1
-    except ValueError as exc:
-        print(f"ERROR: Execution planning failed — {exc}", file=sys.stderr)
-        return 1
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        f_review = pool.submit(review_protocol, hypothesis, protocol)
+        f_packet = pool.submit(generate_execution_packet, protocol_json)
+
+        try:
+            review = f_review.result()
+        except EnvironmentError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print(f"ERROR: Protocol review failed — {exc}", file=sys.stderr)
+            return 1
+
+        try:
+            execution_packet = f_packet.result()
+        except EnvironmentError as exc:
+            print(f"ERROR: {exc}", file=sys.stderr)
+            return 1
+        except ValueError as exc:
+            print(f"ERROR: Execution planning failed — {exc}", file=sys.stderr)
+            return 1
 
     # ── Output ─────────────────────────────────────────────────────────────
     _print_hypothesis(hypothesis)
@@ -196,7 +200,13 @@ def run(hypothesis_text: str) -> int:
 
 # ── Output serialization ───────────────────────────────────────────────────
 
-def _save_output(hypothesis, sgrna_results, protocol, review, execution_packet) -> Path:
+def _save_output(
+    hypothesis: ParsedHypothesis,
+    sgrna_results: SgRNAResults,
+    protocol: KnockoutProtocol,
+    review: dict,
+    execution_packet: dict,
+) -> Path:
     """Serialize full pipeline result to /output/<timestamp>_<gene>.json."""
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 

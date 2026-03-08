@@ -12,19 +12,19 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import sys
 import time
 from pathlib import Path
-from typing import Optional
 
 import anthropic
 from dotenv import load_dotenv
 
+# TODO: remove sys.path hack after proper packaging (pyproject.toml)
 load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import MODEL_FAST, MAX_TOKENS
+from utils.llm_utils import extract_json
 
 MAX_RETRIES = 3
 
@@ -112,7 +112,7 @@ def generate_execution_packet(protocol_json: dict) -> dict:
 
     client = anthropic.Anthropic(api_key=api_key)
     base_msg = USER_TEMPLATE.format(protocol_json=json.dumps(protocol_json, indent=2))
-    last_error: Optional[str] = None
+    last_error: str | None = None
 
     for attempt in range(1, MAX_RETRIES + 1):
         user_content = base_msg
@@ -131,7 +131,7 @@ def generate_execution_packet(protocol_json: dict) -> dict:
             packet = _parse_and_validate(raw)
             return packet
 
-        except (ValueError, json.JSONDecodeError) as exc:
+        except ValueError as exc:
             last_error = str(exc)
             if attempt == MAX_RETRIES:
                 raise ValueError(
@@ -145,14 +145,7 @@ def generate_execution_packet(protocol_json: dict) -> dict:
 # ── Validation ─────────────────────────────────────────────────────────────
 
 def _parse_and_validate(text: str) -> dict:
-    fenced = re.search(r"```(?:json)?\s*([\s\S]+?)```", text)
-    if fenced:
-        text = fenced.group(1).strip()
-
-    try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
-        raise ValueError(f"JSON parse error: {exc}\nRaw: {text[:400]}") from exc
+    data = extract_json(text)
 
     if "execution_packet" not in data:
         raise ValueError("Missing top-level key: 'execution_packet'")
@@ -221,13 +214,41 @@ FIXTURE_PROTOCOL = {
         "position": 7676520,
     },
     "steps": [
-        {"step_number": 1, "title": "Cell seeding", "description": "Seed HeLa at 70% confluency in antibiotic-free DMEM.", "duration_hours": 24.0, "critical_notes": None},
-        {"step_number": 2, "title": "Transfection", "description": "Lipofectamine 3000 with pX459-sgRNA plasmid.", "duration_hours": 0.5, "critical_notes": "No antibiotics during transfection."},
-        {"step_number": 3, "title": "Recovery", "description": "Replace media at 6h; incubate 48h total.", "duration_hours": 48.0, "critical_notes": None},
-        {"step_number": 4, "title": "Puromycin selection", "description": "Select with 2 µg/mL puromycin for 5–7 days.", "duration_hours": 168.0, "critical_notes": "Kill curve required."},
-        {"step_number": 5, "title": "Clonal expansion", "description": "Single-cell clone in 96-well plates for 14 days.", "duration_hours": 336.0, "critical_notes": None},
-        {"step_number": 6, "title": "Validation", "description": "T7E1, Sanger sequencing, Western blot for p53.", "duration_hours": 24.0, "critical_notes": "Confirm biallelic KO."},
-        {"step_number": 7, "title": "Functional assay", "description": "Annexin V/PI flow cytometry + cisplatin IC50.", "duration_hours": 72.0, "critical_notes": "BSL-2 for cisplatin."},
+        {
+            "step_number": 1, "title": "Cell seeding",
+            "description": "Seed HeLa at 70% confluency in antibiotic-free DMEM.",
+            "duration_hours": 24.0, "critical_notes": None,
+        },
+        {
+            "step_number": 2, "title": "Transfection",
+            "description": "Lipofectamine 3000 with pX459-sgRNA plasmid.",
+            "duration_hours": 0.5, "critical_notes": "No antibiotics during transfection.",
+        },
+        {
+            "step_number": 3, "title": "Recovery",
+            "description": "Replace media at 6h; incubate 48h total.",
+            "duration_hours": 48.0, "critical_notes": None,
+        },
+        {
+            "step_number": 4, "title": "Puromycin selection",
+            "description": "Select with 2 µg/mL puromycin for 5–7 days.",
+            "duration_hours": 168.0, "critical_notes": "Kill curve required.",
+        },
+        {
+            "step_number": 5, "title": "Clonal expansion",
+            "description": "Single-cell clone in 96-well plates for 14 days.",
+            "duration_hours": 336.0, "critical_notes": None,
+        },
+        {
+            "step_number": 6, "title": "Validation",
+            "description": "T7E1, Sanger sequencing, Western blot for p53.",
+            "duration_hours": 24.0, "critical_notes": "Confirm biallelic KO.",
+        },
+        {
+            "step_number": 7, "title": "Functional assay",
+            "description": "Annexin V/PI flow cytometry + cisplatin IC50.",
+            "duration_hours": 72.0, "critical_notes": "BSL-2 for cisplatin.",
+        },
     ],
     "total_duration_days": 24.0,
     "expected_efficiency_pct": 72.0,
