@@ -215,9 +215,3 @@ The **Export Protocol** button in the results panel POSTs the current result to 
 ```bash
 pytest tests/
 ```
-
----
-
-## License
-
-MIT
