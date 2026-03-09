@@ -30,7 +30,25 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import MODEL_FAST, MAX_TOKENS
-from models.schemas import ParsedHypothesis
+from models.schemas import EditType, ParsedHypothesis
+
+
+# ── DepMap common essential genes ──────────────────────────────────────────
+
+def _load_common_essential_genes(path: str = "data/CRISPRInferredCommonEssentials.csv") -> frozenset[str]:
+    """
+    Load the DepMap common essential gene list at import time.
+    Returns an empty frozenset if the file is missing — the check
+    simply becomes a no-op until the file is present.
+    """
+    p = Path(__file__).parent.parent / path
+    if not p.exists():
+        return frozenset()
+    with open(p) as f:
+        return frozenset(line.strip().upper() for line in f if line.strip())
+
+
+COMMON_ESSENTIAL_GENES: frozenset[str] = _load_common_essential_genes()
 
 
 # ── Flag dataclass ─────────────────────────────────────────────────────────
@@ -91,6 +109,34 @@ def _lookup_incompatibilities(hypothesis: ParsedHypothesis) -> list[FeasibilityF
     key = (hypothesis.target_gene.upper(), hypothesis.cell_line.value)
     flag = KNOWN_INCOMPATIBILITIES.get(key)
     return [flag] if flag else []
+
+
+def _check_essential_gene(hypothesis: ParsedHypothesis) -> list[FeasibilityFlag]:
+    """
+    Warn if the target gene is a DepMap common essential and the edit is a knockout.
+    Returns an empty list if the essential gene dataset is not loaded.
+    """
+    if not COMMON_ESSENTIAL_GENES:
+        return []
+    if hypothesis.edit_type != EditType.KNOCKOUT:
+        return []
+    gene = hypothesis.target_gene.upper()
+    if gene not in COMMON_ESSENTIAL_GENES:
+        return []
+    return [FeasibilityFlag(
+        severity="warning",
+        issue=(
+            f"DepMap CRISPR screens identify {hypothesis.target_gene} as a commonly essential "
+            f"gene across many cell lines. Complete knockout may cause severe loss of viability "
+            f"or cell death rather than a measurable phenotype."
+        ),
+        recommendation=(
+            f"Consider CRISPRi/dCas9 repression or inducible knockout (e.g. auxin-inducible "
+            f"degron) to modulate {hypothesis.target_gene} without complete loss. "
+            f"If full KO is required, verify cell viability 48-72 h post-transfection "
+            f"before proceeding to phenotypic assays."
+        ),
+    )]
 
 
 # ── Layer 2: LLM biological sanity check ──────────────────────────────────
@@ -192,7 +238,8 @@ def check_feasibility(hypothesis: ParsedHypothesis) -> list[FeasibilityFlag]:
         List of FeasibilityFlag. Empty = no issues found.
         Blockers should halt the pipeline; warnings should be printed.
     """
-    lookup_flags = _lookup_incompatibilities(hypothesis)
+    lookup_flags   = _lookup_incompatibilities(hypothesis)
+    essential_flags = _check_essential_gene(hypothesis)
 
     # Skip LLM check if lookup already returned a blocker
     has_blocker = any(f.is_blocker() for f in lookup_flags)
@@ -203,15 +250,15 @@ def check_feasibility(hypothesis: ParsedHypothesis) -> list[FeasibilityFlag]:
     if not has_blocker and not already_covered:
         llm_flags = _llm_feasibility_check(hypothesis)
 
-    # Deduplicate: drop LLM flags whose issue text overlaps with lookup flags
-    lookup_issues = {f.issue[:40].lower() for f in lookup_flags}
+    # Deduplicate: drop LLM flags whose issue text overlaps with lookup or essential flags
+    static_issues = {f.issue[:40].lower() for f in lookup_flags + essential_flags}
     deduped_llm = [
         f for f in llm_flags
-        if not any(f.issue[:40].lower() in li or li in f.issue[:40].lower()
-                   for li in lookup_issues)
+        if not any(f.issue[:40].lower() in si or si in f.issue[:40].lower()
+                   for si in static_issues)
     ]
 
-    return lookup_flags + deduped_llm
+    return lookup_flags + essential_flags + deduped_llm
 
 
 def print_feasibility_flags(flags: list[FeasibilityFlag]) -> None:

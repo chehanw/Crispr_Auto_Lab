@@ -243,7 +243,7 @@ def run(hypothesis_text: str) -> int:
 
     print("[4+5/5] Reviewing protocol and building execution packet in parallel…")
     with ThreadPoolExecutor(max_workers=2) as pool:
-        f_review = pool.submit(review_protocol, hypothesis, protocol)
+        f_review = pool.submit(review_protocol, hypothesis, protocol, sgrna_results)
         f_packet = pool.submit(generate_execution_packet, protocol_json)
 
         # Wait for review; f_packet runs concurrently in background.
@@ -267,7 +267,7 @@ def run(hypothesis_text: str) -> int:
                     prior_review=review,
                 )
                 protocol_json = json.loads(protocol.model_dump_json())
-                review = review_protocol(hypothesis, protocol)
+                review = review_protocol(hypothesis, protocol, sgrna_results)
                 criticals = [f for f in review["validation_flags"] if f["severity"] == "critical"]
                 print(f"  ✓ Regenerated (verdict: {review['overall_verdict']}, {len(criticals)} critical(s))")
             except (EnvironmentError, ValueError) as exc:

@@ -12,6 +12,7 @@ Retry policy: up to MAX_RETRIES on JSON/schema failures.
 
 from __future__ import annotations
 
+import json
 import os
 import sys
 import time
@@ -25,7 +26,7 @@ load_dotenv(Path(__file__).parent.parent / ".env")
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from config import MODEL_FAST, MAX_TOKENS
-from models.schemas import KnockoutProtocol, ParsedHypothesis
+from models.schemas import KnockoutProtocol, ParsedHypothesis, SgRNAResults
 from utils.llm_utils import extract_json
 
 MAX_RETRIES = 3
@@ -95,7 +96,10 @@ USER_TEMPLATE = """\
 Hypothesis:
 {hypothesis_json}
 
-Generated Protocol:
+All sgRNA Candidates (best first):
+{sgrna_candidates_json}
+
+Generated Protocol (uses the top-ranked guide above as selected_sgrna):
 {protocol_json}
 
 Review this protocol now. Be critical."""
@@ -108,6 +112,7 @@ RETRY_SUFFIX = "\n\nYour previous response failed validation with error: {error}
 def review_protocol(
     hypothesis: ParsedHypothesis,
     protocol: KnockoutProtocol,
+    sgrna_results: SgRNAResults | None = None,
     api_key: str | None = None,
 ) -> dict:
     """
@@ -132,8 +137,17 @@ def review_protocol(
 
     client = anthropic.Anthropic(api_key=api_key)
 
+    candidates = sgrna_results.candidates if sgrna_results else [protocol.selected_sgrna]
+    sgrna_candidates_json = json.dumps(
+        [{"guide_id": c.guide_id, "sequence": c.sequence,
+          "efficiency_score": c.efficiency_score, "pam": c.pam}
+         for c in candidates],
+        indent=2,
+    )
+
     base_msg = USER_TEMPLATE.format(
         hypothesis_json=hypothesis.model_dump_json(indent=2),
+        sgrna_candidates_json=sgrna_candidates_json,
         protocol_json=protocol.model_dump_json(indent=2),
     )
 

@@ -72,7 +72,12 @@ Schema:
     "common_pitfalls": ["<failure mode or caution — one sentence>"]
   },
   "source_papers": [
-    { "title": "<paper title>", "journal": "<journal name>", "year": "<year>" }
+    {
+      "title": "<paper title>",
+      "journal": "<journal name>",
+      "year": "<year>",
+      "key_finding": "<one sentence: the most relevant finding from this paper for the experiment>"
+    }
   ]
 }
 
@@ -82,6 +87,7 @@ Rules:
 - Each list: 3–5 items maximum.
 - One sentence per item. Be concise and practical.
 - source_papers must match the input papers exactly — do not alter titles or years.
+- key_finding: one sentence capturing the single most relevant finding for THIS experiment (gene + context). Be specific, not generic.
 - If an abstract contains no relevant guidance for a category, leave that list shorter."""
 
 USER_TEMPLATE = """\

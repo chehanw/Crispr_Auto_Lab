@@ -128,15 +128,37 @@ def _parse_pubmed_xml(xml_bytes: bytes) -> list[dict]:
         ]
         abstract = " ".join(p for p in abstract_parts if p)
 
+        pmid = _get_text(article, ".//MedlineCitation/PMID")
+        authors = _extract_authors(article)
+
         if title and abstract:
             papers.append({
                 "title":    title,
                 "journal":  journal or "Unknown Journal",
                 "year":     year or "Unknown",
                 "abstract": abstract,
+                "pmid":     pmid,
+                "authors":  authors,
             })
 
     return papers
+
+
+def _extract_authors(article: ET.Element) -> str:
+    """Return 'Last et al.' or 'Last & Last' for ≤2 authors."""
+    author_nodes = article.findall(".//AuthorList/Author")
+    last_names = [
+        _get_text(a, "LastName")
+        for a in author_nodes
+        if _get_text(a, "LastName")
+    ]
+    if not last_names:
+        return ""
+    if len(last_names) == 1:
+        return last_names[0]
+    if len(last_names) == 2:
+        return f"{last_names[0]} & {last_names[1]}"
+    return f"{last_names[0]} et al."
 
 
 def _get_text(element: ET.Element, path: str) -> str:
