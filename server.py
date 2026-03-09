@@ -365,22 +365,55 @@ async def demo_endpoint(name: str):
     ep    = data["execution_packet"]
     lit   = data.get("literature")
 
-    feas_flags = [f for f in rev.get("validation_flags", []) if f.get("category") == "feasibility"]
-    has_warning = any(f["severity"] in ("warning", "critical") for f in feas_flags)
-    feasibility_verdict = "warn" if has_warning else "pass"
+    all_flags = rev.get("validation_flags", [])
+    criticals = [f for f in all_flags if f.get("severity") == "critical"]
+    overall = rev.get("overall_verdict", "approve")
+    feasibility_verdict = (
+        "block" if overall == "major_revision" else
+        "warn"  if criticals else
+        "pass"
+    )
+    feas_flags = [
+        {"severity": "warning", "message": f.get("issue", "")}
+        for f in criticals[:3]
+    ]
+
+    h_gene = h.get("target_gene", "UNKNOWN")
+    h_cell = h.get("cell_line", "HEK293")
+    h_edit = h.get("edit_type", "knockout")
+    sgrna_effs = [
+        c.get("efficiency_score", 0.0)
+        for c in data.get("sgrna_results", {}).get("candidates", [])
+    ]
+    best_eff = max(sgrna_effs, default=0.0)
+    lit_count = len((lit or {}).get("source_papers", []))
+    is_essential = (
+        h_gene.upper() in COMMON_ESSENTIAL_GENES
+        and h_edit.lower() == "knockout"
+    )
+    confidence = compute_confidence(
+        is_essential_gene=is_essential,
+        cell_line_value=h_cell,
+        best_sgrna_efficiency=best_eff,
+        literature_source_count=lit_count,
+        feasibility_flag_count=len(criticals),
+    )
 
     return {
         "hypothesis_text":    h.get("raw_hypothesis", ""),
-        "gene":               h.get("target_gene", ""),
-        "cell_line":          h.get("cell_line", ""),
-        "edit_type":          h.get("edit_type", "knockout").title(),
+        "gene":               h_gene,
+        "cell_line":          h_cell,
+        "edit_type":          h_edit.title(),
         "phenotype":          h.get("phenotype", ""),
         "system_context":     h.get("system_context", ""),
         "assumptions":        h.get("assumptions_made", []),
         "feasibility_verdict": feasibility_verdict,
-        "feasibility_flags":  [
-            {"severity": f.get("severity", "warning"), "message": f.get("issue", "")}
-            for f in feas_flags
+        "feasibility_flags":  feas_flags,
+        "confidence_score":   confidence.score,
+        "confidence_label":   confidence.label,
+        "confidence_factors": [
+            {"label": f.label, "penalty": f.penalty, "triggered": f.triggered}
+            for f in confidence.factors
         ],
         "sgrna_candidates": [
             {
