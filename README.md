@@ -1,4 +1,4 @@
-# AutoLab CRISPR
+# CRISPR AutoLab
 
 An autonomous CRISPR experimental design assistant powered by Claude. Input a free-text biological hypothesis — get a complete, peer-reviewed knockout protocol in seconds.
 
